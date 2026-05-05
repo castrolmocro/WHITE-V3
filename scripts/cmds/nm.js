@@ -7,12 +7,11 @@
  * /nm time [min] [max]— random range  (e.g. /nm time 20 40)
  * /nm status          — show current settings
  *
- * The bot enforces the name on a recurring timer AND immediately
- * when it detects someone changing it — so even mid-changes get reverted.
+ * البوت سيغير الاسم فقط حسب الوقت، وليس مباشرة عند تغييره
  */
 
-if (!global._nmIntervals) global._nmIntervals = new Map(); // recurring timers
-if (!global._nmLocks)     global._nmLocks     = new Map(); // { name, minDelay, maxDelay, enabled }
+if (!global._nmIntervals) global._nmIntervals = new Map();
+if (!global._nmLocks)     global._nmLocks     = new Map();
 
 const intervals = global._nmIntervals;
 const locks     = global._nmLocks;
@@ -33,10 +32,6 @@ function getIntervalMs(lock) {
   return randBetween(min, max) * 1000;
 }
 
-/**
- * Start (or restart) the recurring interval for a thread.
- * Uses a self-rescheduling setTimeout so the delay can be random each cycle.
- */
 function startInterval(threadID, lock) {
   stopInterval(threadID);
 
@@ -61,6 +56,7 @@ function startInterval(threadID, lock) {
 
       schedule();
     }, delayMs);
+
     intervals.set(threadID, t);
   }
 
@@ -75,24 +71,24 @@ function stopInterval(threadID) {
   locks.delete(threadID);
 }
 
-// ─── Module ───────────────────────────────────────────────────────────────────
+// ─── Module ─────────────────────────────────────────────
 
 module.exports = {
   config: {
     name: "nm",
-    version: "3.0",
-    author: "Custom",
+    version: "3.1",
+    author: "Custom Edit",
     countDown: 5,
     role: 0,
-    description: "قفل اسم الغروب مع تطبيق دوري بالوقت",
+    description: "قفل اسم الغروب مع تطبيق دوري فقط (بدون تغيير فوري)",
     category: "group",
     guide: {
       en:
         "  {pn} [name]           — Lock group name\n" +
         "  /unm                  — Unlock group name\n" +
-        "  {pn} time [s]         — Fixed interval in seconds (e.g. /nm time 30)\n" +
-        "  {pn} time [min] [max] — Random interval range  (e.g. /nm time 20 40)\n" +
-        "  {pn} status           — Show current settings"
+        "  {pn} time [s]         — Fixed interval\n" +
+        "  {pn} time [min] [max] — Random interval\n" +
+        "  {pn} status           — Show settings"
     }
   },
 
@@ -102,135 +98,89 @@ module.exports = {
 
     const sub = (args[0] || "").toLowerCase();
 
-    // ── /nm status ──────────────────────────────────────────────────────────
+    // ── status ──
     if (sub === "status") {
       const lock = await threadsData.get(threadID, "data.nmLock");
       if (!lock?.name) {
-        return message.reply("📋 قفل الاسم مُعطَّل في هذا الغروب.");
+        return message.reply("📋 قفل الاسم مُعطَّل.");
       }
+
       const min = lock.minDelay ?? lock.delay ?? 30;
       const max = lock.maxDelay ?? min;
-      const delayStr = min === max ? `${min}s` : `${min}–${max}s (عشوائي)`;
-      const active = intervals.has(threadID) ? "✅ يعمل" : "⚠️ غير نشط (أعد تشغيل البوت)";
+      const delayStr = min === max ? `${min}s` : `${min}–${max}s`;
+
       return message.reply(
-        `📋 حالة قفل الاسم\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `🔒 الحالة : ${lock.enabled ? "مفعّل" : "مُعطَّل"}\n` +
-        `📛 الاسم  : ${lock.name}\n` +
-        `⏱ الفترة : ${delayStr}\n` +
-        `🔄 المؤقت : ${active}`
+        `📋 الحالة\n━━━━━━━━━━\n` +
+        `🔒 ${lock.enabled ? "مفعل" : "معطل"}\n` +
+        `📛 ${lock.name}\n` +
+        `⏱ ${delayStr}`
       );
     }
 
-    // ── /nm time [min] [max?] ────────────────────────────────────────────────
+    // ── time ──
     if (sub === "time") {
       const v1 = parseInt(args[1]);
       const v2 = parseInt(args[2]);
 
       if (isNaN(v1) || v1 < 1) {
-        return message.reply(
-          "❌ مثال:\n" +
-          "  /nm time 30      — كل 30 ثانية\n" +
-          "  /nm time 20 40   — عشوائي بين 20 و 40 ثانية"
-        );
+        return message.reply("❌ مثال: /nm time 30 أو /nm time 20 40");
       }
 
       const current = await threadsData.get(threadID, "data.nmLock") || {};
       if (!current.name) {
-        return message.reply("❌ لم يُقفل اسم بعد. استخدم /nm [الاسم] أولاً.");
+        return message.reply("❌ لازم تقفل اسم أولاً.");
       }
 
-      if (!isNaN(v2) && v2 >= v1) {
-        current.minDelay = v1;
-        current.maxDelay = v2;
-        current.delay    = v1;
-      } else {
-        current.minDelay = v1;
-        current.maxDelay = v1;
-        current.delay    = v1;
-      }
+      current.minDelay = v1;
+      current.maxDelay = (!isNaN(v2) && v2 >= v1) ? v2 : v1;
+      current.delay = v1;
 
       await threadsData.set(threadID, current, "data.nmLock");
       startInterval(threadID, current);
 
-      const delayStr = current.minDelay === current.maxDelay
-        ? `${current.minDelay}s`
-        : `${current.minDelay}–${current.maxDelay}s (عشوائي)`;
-
-      return message.reply(
-        `✅ تم تحديث الفترة الزمنية: ${delayStr}\n` +
-        `البوت سيعيد تطبيق الاسم تلقائياً كل ${delayStr}.`
-      );
+      return message.reply("✅ تم تحديث الوقت.");
     }
 
-    // ── /nm [name] ───────────────────────────────────────────────────────────
+    // ── set name ──
     const name = args.join(" ").trim();
     if (!name) {
-      return message.reply(
-        "📋 أوامر قفل الاسم\n" +
-        "━━━━━━━━━━━━━━━━━━\n" +
-        "• /nm [الاسم]          — قفل اسم الغروب\n" +
-        "• /unm                 — فتح قفل الاسم\n" +
-        "• /nm time [ث]         — تحديد الفترة (مثال: /nm time 30)\n" +
-        "• /nm time [ث1] [ث2]  — فترة عشوائية (مثال: /nm time 20 40)\n" +
-        "• /nm status           — عرض الإعدادات الحالية\n" +
-        "━━━━━━━━━━━━━━━━━━\n" +
-        "الافتراضي: كل 30 ثانية"
-      );
+      return message.reply("❌ اكتب اسم بعد /nm");
     }
 
     const existing = await threadsData.get(threadID, "data.nmLock") || {};
-    const minDelay = existing.minDelay ?? 30;
-    const maxDelay = existing.maxDelay ?? 30;
 
     const newLock = {
       name,
-      delay:    minDelay,
-      minDelay,
-      maxDelay,
-      enabled:  true
+      delay: existing.minDelay ?? 30,
+      minDelay: existing.minDelay ?? 30,
+      maxDelay: existing.maxDelay ?? 30,
+      enabled: true
     };
 
     await threadsData.set(threadID, newLock, "data.nmLock");
-
     startInterval(threadID, newLock);
 
-    const delayStr = minDelay === maxDelay
-      ? `${minDelay}s`
-      : `${minDelay}–${maxDelay}s (عشوائي)`;
-
-    return message.reply(
-      `🔒 تم قفل اسم الغروب!\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `📛 الاسم  : ${name}\n` +
-      `⏱ الفترة : ${delayStr}\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `✅ البوت سيعيد الاسم كل ${delayStr} تلقائياً.\n` +
-      `✅ وأيضاً فوراً إذا حاول أحد تغييره.\n` +
-      `استخدم /unm للإلغاء.`
-    );
+    return message.reply("🔒 تم قفل الاسم بنجاح.");
   },
 
-  onEvent: async function ({ api, event, threadsData }) {
-    const { threadID, author, logMessageType } = event;
+  // ❌ هنا التعديل: لا تغيير فوري
+  onEvent: async function ({ event, threadsData }) {
+    const { threadID, logMessageType } = event;
     if (logMessageType !== "log:thread-name") return;
 
-    const botID = String(api.getCurrentUserID());
-    if (String(author) === botID) return;
-
     let nmLock;
-    try { nmLock = await threadsData.get(threadID, "data.nmLock"); } catch (_) { return; }
+    try {
+      nmLock = await threadsData.get(threadID, "data.nmLock");
+    } catch (_) { return; }
+
     if (!nmLock?.enabled || !nmLock?.name) return;
 
-    // Sync in-memory lock in case it was set before this restart
+    // فقط إعادة تشغيل المؤقت لو لم يكن شغال
     if (!locks.has(threadID)) {
       locks.set(threadID, nmLock);
       startInterval(threadID, nmLock);
     }
 
-    // Immediate restore — don't wait for the next interval cycle
-    try {
-      await api.setTitle(nmLock.name, threadID);
-    } catch (_) {}
+    // 🚫 لا يوجد setTitle هنا => لا تغيير فوري
   }
 };
