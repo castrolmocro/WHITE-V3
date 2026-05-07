@@ -12,6 +12,21 @@ const fs    = require("fs");
 const path  = require("path");
 const os    = require("os");
 
+// ── Ensure parseAndCheckLogin is available globally ───────────────────────────
+// Guards against the fca-eryxenx bug where changeGroupImage.js calls
+// parseAndCheckLogin without importing it, causing a ReferenceError.
+try {
+  require(path.join(process.cwd(), "bot/utils/parseAndCheckLogin"));
+} catch (_) {
+  // If the utility can't be loaded, define a minimal inline shim so the
+  // command still works regardless of the environment.
+  if (typeof global.parseAndCheckLogin === "undefined") {
+    global.parseAndCheckLogin = function parseAndCheckLogin(ctx, cb) {
+      return typeof cb === "function" ? cb(null, ctx) : ctx;
+    };
+  }
+}
+
 // مجلد لحفظ صور القفل — يستخدم /tmp للتوافق مع Railway و Replit
 const CACHE_DIR = path.join(os.tmpdir(), "groupimg_locks");
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -31,7 +46,22 @@ function isGroupAdmin(uid, tid) {
 
 /** تغيير صورة الغروب بصمت (بدون رسالة) */
 async function applyImage(api, tid, filePath) {
-  await api.changeGroupImage(fs.createReadStream(filePath), tid);
+  try {
+    await api.changeGroupImage(fs.createReadStream(filePath), tid);
+  } catch (err) {
+    // Re-throw with enriched context so callers can distinguish error types
+    const msg = err?.message || String(err);
+    if (msg.includes("parseAndCheckLogin") || msg.includes("is not defined")) {
+      const enriched = new Error(
+        "parseAndCheckLogin_missing: fca-eryxenx library is missing the " +
+        "parseAndCheckLogin import in changeGroupImage.js. " +
+        "Run `node scripts/patch-fca.js` to fix, then restart the bot."
+      );
+      enriched.code = "PARSE_CHECK_LOGIN_MISSING";
+      throw enriched;
+    }
+    throw err;
+  }
 }
 
 module.exports = {
@@ -125,11 +155,19 @@ module.exports = {
 
     } catch (err) {
       const msg = err?.message || String(err);
-      message.reply(
-        msg.includes("MQTT") || msg.includes("mqtt")
-          ? "❌ انتهت الجلسة — انتظر ثم حاول مجدداً."
-          : `❌ فشل تغيير صورة الغروب.\n${msg}`
-      );
+      if (err?.code === "PARSE_CHECK_LOGIN_MISSING" || msg.includes("parseAndCheckLogin")) {
+        message.reply(
+          "❌ خطأ في مكتبة fca-eryxenx: الدالة parseAndCheckLogin غير معرّفة.\n" +
+          "🔧 الحل: أعد تشغيل البوت — سيتم تطبيق الإصلاح تلقائياً عند الإقلاع.\n" +
+          "أو نفّذ يدوياً: node scripts/patch-fca.js ثم أعد التشغيل."
+        );
+      } else {
+        message.reply(
+          msg.includes("MQTT") || msg.includes("mqtt")
+            ? "❌ انتهت الجلسة — انتظر ثم حاول مجدداً."
+            : `❌ فشل تغيير صورة الغروب.\n${msg}`
+        );
+      }
     } finally {
       try { fs.unlinkSync(tmpFile); } catch (_) {}
     }
