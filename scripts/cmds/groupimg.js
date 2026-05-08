@@ -14,15 +14,21 @@ const os    = require("os");
 
 // ── Ensure parseAndCheckLogin is available globally ───────────────────────────
 // Guards against the fca-eryxenx bug where changeGroupImage.js calls
-// parseAndCheckLogin without importing it, causing a ReferenceError.
+// parseAndCheckLogin(ctx, http) without importing it.
+// IMPORTANT: the real function returns an async handler for .then() —
+// a shim that returns a plain value breaks the promise chain and causes
+// "Cannot read properties of undefined (reading 'metadata')".
 try {
   require(path.join(process.cwd(), "bot/utils/parseAndCheckLogin"));
 } catch (_) {
-  // If the utility can't be loaded, define a minimal inline shim so the
-  // command still works regardless of the environment.
   if (typeof global.parseAndCheckLogin === "undefined") {
-    global.parseAndCheckLogin = function parseAndCheckLogin(ctx, cb) {
-      return typeof cb === "function" ? cb(null, ctx) : ctx;
+    global.parseAndCheckLogin = function parseAndCheckLogin(ctx, http, retryCount = 0) {
+      return async function handleResponse(res) {
+        const body = res?.data;
+        if (body == null) return body;
+        if (typeof body === "object") return body;
+        try { return JSON.parse(String(body).replace(/^[^{[]*/, "")); } catch (_) { return body; }
+      };
     };
   }
 }
