@@ -1517,38 +1517,72 @@ async function sendToAgents() {
   const input = document.getElementById("chatInput");
   const msg = input.value.trim();
   if (!msg) return showToast("اكتب طلبك أولاً","error");
+  const sendBtn = document.querySelector('#tab-agents button.btn-primary');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = "⏳ جارٍ..."; }
   input.value = "";
   appendUserMsg("chatBox", msg);
   chatHistory.push({role:"user", content: msg});
 
   const statusEl = document.getElementById("agentStatus");
-  statusEl.innerHTML = "⏳ جارٍ تحضير السياق...";
+  statusEl.innerHTML = '⏳ جارٍ تحضير السياق...';
 
   const [autoCtx, fileContexts] = await Promise.all([getAutoContext(), buildFileContexts(4)]);
-  statusEl.innerHTML = "🔍 المحلل يعمل...";
-  const thk = appendThinking("chatBox", "🔍 المحلل");
+  statusEl.innerHTML = '🔍 <strong style="color:#60a5fa">المحلل</strong> يعمل... ثم <strong style="color:#c4b5fd">المطور</strong> ثم <strong style="color:#6ee7b7">المراجع</strong> — قد يستغرق 60-90 ثانية';
+  const thk = appendThinking("chatBox", "🔍 المحلل → 💻 المطور → ✅ المراجع");
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 150000);
 
   try {
     const r = await fetch("/api/devhub/ai/pipeline", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
+      signal: ctrl.signal,
       body: JSON.stringify({ message: msg, files: fileContexts, history: chatHistory.slice(-8), autoCtx })
     });
+    clearTimeout(timer);
     removeThinking(thk);
     const data = await r.json();
     statusEl.innerHTML = "";
-    if (data.steps) {
+    if (data.steps && data.steps.length) {
       for (const step of data.steps) {
         appendMsg("chatBox", step.icon + " " + step.name, "", step.color || "#60a5fa", step.reply);
         chatHistory.push({role:"assistant", content:"["+step.name+"]: "+step.reply});
       }
+      // If the implementer produced code, set lastAgentCode + offer deploy button
+      const implStep = data.steps.find(s => s.agent === "implementer");
+      if (implStep) {
+        const codeMatch = implStep.reply.match(/\`\`\`(?:javascript|js)?\n?([\s\S]*?)\`\`\`/);
+        if (codeMatch) {
+          lastAgentCode = codeMatch[1].trim();
+          const box = document.getElementById("chatBox");
+          const deployDiv = document.createElement("div");
+          deployDiv.style.cssText = "margin-bottom:12px;padding:10px 14px;border-radius:10px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25)";
+          deployDiv.innerHTML = \`<div style="font-size:.79rem;color:var(--green);font-weight:700;margin-bottom:7px">✅ الكود جاهز — اضغط لتطبيقه فوراً في البوت</div>
+<div style="display:flex;gap:7px;flex-wrap:wrap">
+  <button class="btn btn-success btn-sm" onclick="deployAgentCode()">⚡ تطبيق في البوت (بدون إيقاف)</button>
+  <button class="btn btn-outline btn-sm" onclick="deployAgentCode(true)">⚡ تطبيق + رفع لـ GitHub</button>
+  <button class="btn btn-outline btn-sm" onclick="copyLastCode()">📋 نسخ الكود</button>
+</div>\`;
+          box.appendChild(deployDiv);
+          box.scrollTop = box.scrollHeight;
+        }
+      }
     } else {
-      appendMsg("chatBox","🤖 AI","","#60a5fa", data.error || "لا يوجد رد");
+      appendMsg("chatBox","🤖 AI","","#60a5fa", data.error || "لا يوجد رد — تأكد من الاتصال وأعد المحاولة");
     }
   } catch(e) {
+    clearTimeout(timer);
     removeThinking(thk);
     statusEl.innerHTML = "";
-    appendMsg("chatBox","❌ خطأ","","#f87171", e.message);
+    const isTimeout = e.name === "AbortError";
+    appendMsg("chatBox","❌ خطأ","","#f87171",
+      isTimeout
+        ? "انتهت المهلة (150 ثانية) — الخوادم مشغولة، جرّب مرة أخرى أو استخدم تبويب ⚡ سريع"
+        : e.message);
+    showToast(isTimeout ? "⏱️ انتهت المهلة" : "❌ " + e.message, "error");
+  } finally {
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = "🚀 إرسال"; }
   }
 }
 
@@ -1811,6 +1845,57 @@ function applyFromChat() {
       }
     } else showToast("❌ " + data.error, "error");
   });
+}
+
+// ── deployAgentCode — save last AI code to bot + optionally push to GitHub ──────
+async function deployAgentCode(withGithub) {
+  if (!lastAgentCode) return showToast("لا يوجد كود من الوكلاء بعد","error");
+
+  // Try to extract command name from code
+  const nameMatch = lastAgentCode.match(/name\s*:\s*["']([a-zA-Z0-9_\-]+)["']/);
+  const suggested = nameMatch ? nameMatch[1] : "newcmd";
+  const rawName = prompt(\`اسم ملف الأمر (بدون مسار أو .js):\\nمثال: \${suggested}\`, suggested);
+  if (!rawName) return;
+  const safeName = rawName.trim().replace(/[^a-zA-Z0-9_\-]/g,"").toLowerCase();
+  if (!safeName) return showToast("اسم غير صالح","error");
+
+  try {
+    // 1. Save locally + hot-reload
+    const wr = await fetch("/api/devhub/create-command", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ name: safeName, code: lastAgentCode, pushToGithub: !!withGithub })
+    });
+    const wd = await wr.json();
+    if (!wd.ok) return showToast("❌ " + (wd.error||"فشل الحفظ"), "error");
+
+    let msg = \`✅ الأمر /\${wd.name || safeName} يعمل الآن في البوت!\`;
+    if (wd.hotLoaded) msg += " ⚡ تحميل فوري";
+    if (wd.githubUrl) msg += \` <a href="\${wd.githubUrl}" target="_blank" style="color:#60a5fa">🐙 GitHub</a>\`;
+    showToast("✅ الأمر /" + (wd.name||safeName) + " يعمل الآن!", "success");
+
+    const box = document.getElementById("chatBox");
+    const div = document.createElement("div");
+    div.style.cssText = "margin-bottom:10px;padding:10px 14px;border-radius:10px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);font-size:.82rem";
+    div.innerHTML = msg;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+
+    refreshFileTree();
+  } catch(e) {
+    showToast("❌ " + e.message, "error");
+  }
+}
+
+function copyLastCode() {
+  if (!lastAgentCode) return showToast("لا يوجد كود بعد","error");
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(lastAgentCode).then(() => showToast("📋 تم نسخ الكود","success"));
+  } else {
+    const el = document.createElement("textarea");
+    el.value = lastAgentCode; document.body.appendChild(el); el.select();
+    document.execCommand("copy"); el.remove();
+    showToast("📋 تم نسخ الكود","success");
+  }
 }
 
 // ── File Upload ────────────────────────────────────────────────────────────────
@@ -3295,24 +3380,52 @@ async function ghSaveConfirm() {
   const commitMsg = document.getElementById('ghCommitMsg').value.trim() || ('✏️ تعديل: ' + _ghCurrent.split('/').pop());
   document.getElementById('ghCommitRow').style.display = 'none';
   const st = document.getElementById('ghEdStatus');
-  st.innerHTML = '<span style="color:var(--text3)">⏳ جارٍ الرفع إلى GitHub...</span>';
+  st.innerHTML = '<span style="color:var(--text3)">⏳ جارٍ الحفظ...</span>';
+
+  let localOk = false, localHot = false, ghOk = false, ghUrl = '';
+  const isCmd = _ghCurrent.startsWith('scripts/cmds/') && _ghCurrent.endsWith('.js');
+
+  // ── Step 1: write locally + hot-reload (if it's a bot command) ─────────────
+  try {
+    const wr = await fetch('/api/devhub/file/write', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ path: _ghCurrent, content })
+    });
+    const wd = await wr.json();
+    if (wd.ok) { localOk = true; localHot = !!wd.hotReloaded; }
+  } catch(_) {}
+
+  // ── Step 2: push to GitHub ──────────────────────────────────────────────────
   try {
     const r = await fetch('/api/devhub/github/file', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ owner, repo, branch, path:_ghCurrent, content, commitMsg })
     });
     const data = await r.json();
-    if (data.ok) {
-      st.innerHTML = \`<span style="color:var(--green)">✅ حُفظ — \${new Date().toLocaleTimeString('ar')}</span> <a href="\${ghEsc(data.url)}" target="_blank" style="color:#60a5fa;font-size:.73rem;margin-right:6px">🔗 GitHub</a>\`;
-      showToast('✅ تم الحفظ على GitHub!','success');
-    } else {
-      st.innerHTML = \`<span style="color:var(--red)">❌ \${ghEsc(data.error||'فشل الحفظ')}</span>\`;
-      showToast('❌ '+(data.error||'فشل'),'error');
+    if (data.ok) { ghOk = true; ghUrl = data.url || ''; }
+    else {
+      st.innerHTML = \`<span style="color:var(--red)">❌ \${ghEsc(data.error||'فشل الرفع لـ GitHub')}</span>\`;
+      showToast('❌ '+(data.error||'فشل GitHub'),'error');
+      return;
     }
   } catch(e) {
     st.innerHTML = \`<span style="color:var(--red)">❌ \${ghEsc(e.message)}</span>\`;
     showToast('❌ خطأ في الاتصال','error');
+    return;
   }
+
+  // ── Step 3: show result ─────────────────────────────────────────────────────
+  let statusParts = [\`<span style="color:var(--green)">✅ حُفظ على GitHub</span>\`];
+  if (localHot && isCmd) statusParts.push(\`<span style="color:#6ee7b7;font-size:.72rem">⚡ مُحمَّل في البوت فوراً</span>\`);
+  else if (localOk && isCmd) statusParts.push(\`<span style="color:var(--text3);font-size:.72rem">💾 محفوظ محلياً</span>\`);
+  if (ghUrl) statusParts.push(\`<a href="\${ghEsc(ghUrl)}" target="_blank" style="color:#60a5fa;font-size:.73rem">🔗 فتح</a>\`);
+  statusParts.push(\`<span style="color:var(--text3);font-size:.72rem">\${new Date().toLocaleTimeString('ar')}</span>\`);
+  st.innerHTML = statusParts.join(' &nbsp;');
+
+  const toastMsg = localHot && isCmd
+    ? '✅ تم الحفظ على GitHub + تحميل فوري في البوت!'
+    : '✅ تم الحفظ على GitHub!';
+  showToast(toastMsg, 'success');
 }
 
 function ghCopyPath() {
