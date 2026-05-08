@@ -65,9 +65,16 @@ function resolveImportLine(targetFile) {
   return IMPORT_VARIANTS[0];
 }
 
+function isAlreadyPatched(content) {
+  // Check specifically for an import/require statement, NOT just the function call.
+  // The file may CALL parseAndCheckLogin without importing it — that is exactly the bug.
+  return /require\s*\([^)]*parseAndCheckLogin[^)]*\)/.test(content) ||
+         /\{\s*parseAndCheckLogin\s*\}\s*=\s*require/.test(content);
+}
+
 function patchContent(content, importLine) {
-  // Already patched?
-  if (content.includes("parseAndCheckLogin")) return null;
+  // Already patched? (import present, not just a bare function call)
+  if (isAlreadyPatched(content)) return null;
 
   for (const anchor of ANCHOR_LINES) {
     const idx = content.indexOf(anchor);
@@ -95,12 +102,6 @@ for (const target of CANDIDATE_PATHS) {
 
   try {
     const original = fs.readFileSync(target, "utf8");
-
-    if (original.includes("parseAndCheckLogin")) {
-      console.log("[patch-fca] ✅ Already patched — nothing to do.");
-      patched = true;
-      break;
-    }
 
     const importLine = resolveImportLine(target);
     const result     = patchContent(original, importLine);
