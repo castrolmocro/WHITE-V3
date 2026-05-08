@@ -17,7 +17,7 @@ module.exports = {
     const start = Date.now();
 
     try {
-      await message.reply("🏓 جارٍ القياس...");
+      await message.reply("🏸 جارٍ القياس...");
       const elapsed = Date.now() - start;
 
       const uptime = process.uptime();
@@ -32,7 +32,7 @@ module.exports = {
       const cmdsCount = global.GoatBot?.commands?.size || 0;
 
       return message.reply(
-        `🏓 بونغ!\n\n` +
+        `🏸 بونغ!\n\n` +
         `⚡ زمن الاستجابة: ${elapsed} مللي ثانية\n` +
         `🕐 وقت التشغيل: ${uptimeStr}\n` +
         `💾 الذاكرة: ${memMB} MB\n` +
